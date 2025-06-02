@@ -2,8 +2,9 @@ import click
 import pandas as pd
 import math
 from src.algorithms.clustering_algorithm.duration_limited_clusterer import DurationLimitedClusterer
+from src.services.rpc_manager.rpc_server import RPCServer
 from src.utils.utils import random_choice
-from src.data.data_loader import load_map_data
+from src.data.data_loader import load_map_data, get_bbox
 from src.algorithms.result_visualizer.result_visualizer import ResultVisualizer
 from src.algorithms.data_preprocessor.preprocess_data import preprocess_data
 
@@ -47,9 +48,16 @@ def main(warehouse_coord, orders_excel, per_delivery_duration, work_duration):
         points = df[['latitude', 'longitude']].values
         click.echo(f"共读取 {len(points)} 个运单。")
 
+        # 根据仓库坐标获取边界框
+        bbox = get_bbox(warehouse_coord, points)
+
         # 读取地图数据（假设此函数使用仓库坐标）
         click.echo(f"加载地图数据...")
-        load_map_data(warehouse_coord, points)
+        load_map_data(bbox)
+
+        # 启动 DirectRouter RPC 服务器
+        server = RPCServer()
+        server.start_server(bbox=bbox)
 
         # 预处理数据
         click.echo("正在预处理数据...")
@@ -65,7 +73,7 @@ def main(warehouse_coord, orders_excel, per_delivery_duration, work_duration):
         clusterer = DurationLimitedClusterer(
             warehouse_coord, points, per_delivery_duration, work_duration
         )
-        labels, final_centroids = clusterer.clustering(centroids, step=3, max_iter=100, print_step=True)
+        labels, final_centroids = clusterer.clustering(centroids, step=3, max_iter=30)
         click.echo("聚类完成。")
 
         # 可视化并导出结果

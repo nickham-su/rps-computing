@@ -13,7 +13,7 @@ class GeoIndexer:
             cls._instance.nearest_node_cache = {}
             node_df = get_all_nodes()
             cls._instance.node_ids = node_df['node_id'].copy()
-            cls._instance.kd_tree = KDTree(node_df[['lat', 'lon']].values, leaf_size=10)
+            cls._instance.kd_tree = KDTree(node_df[['lat', 'lon']].values, leaf_size=30)
         return cls._instance
 
     def get_nearest_node_id(self, point: Tuple[float, float]) -> int:

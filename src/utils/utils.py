@@ -85,3 +85,13 @@ def calc_weighted_centroid(points: np.ndarray, distance_threshold=1.0):
     total_weight = np.sum(weights)
     weighted_centroid = weighted_sum / total_weight
     return weighted_centroid
+
+
+def coords_ndarray_to_tuples(coords: np.ndarray) -> List[Tuple[float, float]]:
+    """
+    将坐标的ndarray转换为元组列表
+    np.ndarray: shape=(n, 2)
+
+    return: List[Tuple[float, float]]
+    """
+    return [(lat, lon) for lat, lon in coords.tolist()]

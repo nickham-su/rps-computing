@@ -6,7 +6,8 @@ from datetime import datetime
 import gzip
 from typing import Optional, Dict
 from src.algorithms.result_visualizer.modules.draw_map import draw_map
-from src.services.multi_stop_router.multi_stop_router import MultiStopRouter
+from src.services.geo_indexer.geo_indexer import GeoIndexer
+from src.services.rpc_manager.rpc_client import RPCClient
 
 
 class ResultVisualizer:
@@ -23,23 +24,26 @@ class ResultVisualizer:
 
     def _calc_route_series(self):
         self.route_series = np.full(self.points.shape[0], -1)
-        for label in np.unique(self.labels):
-            cluster_points = self.points[self.labels == label]
-            # 计算路径
-            points_sorted, route_node_ids = MultiStopRouter.routing(cluster_points, self.warehouse_coord)
-            # 计算路径用时
-            duration = MultiStopRouter.get_route_duration(route_node_ids, self.warehouse_coord)
+        labels = np.unique(self.labels)
+        batch_calc_params = [
+            (self.points[self.labels == label], self.warehouse_coord) for label in labels
+        ]
+        geo_indexer = GeoIndexer()
+        rpc_client = RPCClient()
+        results = rpc_client.batch_calc_route_duration_with_indexes(batch_calc_params)
+        for (duration, indexes), label in zip(results, labels):
             self.route_driving_duration[label] = duration
-            # 计算从仓库到达第一个点的时间
-            self.route_first_point_duration[label] = MultiStopRouter.get_route_duration(route_node_ids[:1],
-                                                                                        self.warehouse_coord)
-            # 记录路径编号
-            self.route_series[self.labels == label] = points_sorted + 1
+            self.route_series[self.labels == label] = np.array(indexes) + 1
+            cluster_points = self.points[self.labels == label]
+            first_index = np.argmin(indexes)
+            lat, lon = cluster_points[first_index]
+            self.route_first_point_duration[label] = rpc_client.calc_path_duration(
+                geo_indexer.get_nearest_node_id(self.warehouse_coord),
+                geo_indexer.get_nearest_node_id((lat, lon))
+            )
 
     def draw_map(self):
-        if self.route_series is None:
-            self._calc_route_series()
-        return draw_map(self.points, self.route_series, self.labels)
+        return draw_map(self.points, self.labels)
 
     def statistical(self):
         if self.route_series is None:
