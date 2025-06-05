@@ -23,7 +23,7 @@ class MultiStopRouterProcessExecutor:
             if self._executor is not None:
                 self._executor.shutdown(wait=True)  # 正确关闭旧的executor
 
-            workers = workers if workers is not None else os.cpu_count()
+            workers = workers if workers is not None else max(1, os.cpu_count() - 1)
             self._executor = ProcessPoolExecutor(max_workers=workers)
 
     def submit(self, fn, *args, **kwargs):

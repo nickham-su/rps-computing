@@ -1,8 +1,14 @@
+from concurrent.futures import ProcessPoolExecutor
 import math
+import os
+
+import click
 import numpy as np
 from typing import Tuple, Dict
 from src.algorithms.clustering_algorithm.clustering_algorithm import ClusteringAlgorithm
-from src.services.rpc_manager.rpc_client import RPCClient
+from src.data.data_loader import load_map_data
+from src.services.multi_stop_router.multi_stop_router_rpc_client import MultiStopRouterRpcClient
+from src.utils.utils import random_choice
 
 
 class DurationLimitedClusterer(ClusteringAlgorithm):
@@ -48,9 +54,12 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
                 if estimated_saturation_ratio - cache_saturation_ratio > max_diff:
                     refresh_labels.append(cluster_label)
 
-        batch_calc_route_duration_params = [(self.points[labels == l], self.warehouse_coord) for l in refresh_labels]
+        batch_calc_route_duration_params = [
+            ([(float(lat), float(lon)) for lat, lon in self.points[labels == l]], self.warehouse_coord)
+            for l in refresh_labels
+        ]
         # 在途时间
-        travel_time_list = RPCClient().batch_calc_route_duration(batch_calc_route_duration_params)
+        travel_time_list = MultiStopRouterRpcClient().batch_calc_route_duration(batch_calc_route_duration_params)
         # 配送时间
         delivery_time_list = [self.per_delivery_duration * len(self.points[labels == l]) for l in refresh_labels]
         # 计算饱和度
@@ -75,11 +84,59 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
 
     def calc_duration(self, labels: np.ndarray) -> (float, float, float):
         un_labels = np.unique(labels)
-        batch_calc_route_duration_params = [(self.points[labels == l], self.warehouse_coord) for l in un_labels]
+        batch_calc_route_duration_params = [
+            ([(float(lat), float(lon)) for lat, lon in self.points[labels == l]], self.warehouse_coord)
+            for l in un_labels
+        ]
         # 在途时间
-        travel_time_list = RPCClient().batch_calc_route_duration(batch_calc_route_duration_params)
+        travel_time_list = MultiStopRouterRpcClient().batch_calc_route_duration(batch_calc_route_duration_params)
         # 配送时间
         delivery_time_list = [self.per_delivery_duration * len(self.points[labels == l]) for l in un_labels]
         # 计算总时间
         routes_duration = np.array(delivery_time_list) + np.array(travel_time_list)
         return sum(routes_duration), max(routes_duration), min(routes_duration), np.std(routes_duration)
+
+
+def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray, zone_labels: np.ndarray,
+                                   warehouse_coord: Tuple[float, float], per_delivery_duration: int, work_duration: int,
+                                   init_cluster_size: int = 100):
+    un_zone_labels = np.unique(zone_labels)
+
+    workers = min(math.ceil(os.cpu_count() / 2), len(un_zone_labels))
+    # workers = 2
+    executor = ProcessPoolExecutor(max_workers=workers)
+    list(executor.map(load_map_data, [bbox] * workers))
+    features = []
+
+    for zone_label in un_zone_labels:
+        zone_points = points[zone_labels == zone_label]
+        features.append(executor.submit(duration_limited_cluster, zone_points, warehouse_coord,
+                                        per_delivery_duration, work_duration, init_cluster_size, int(zone_label) + 1))
+
+    result_labels = np.full(len(zone_labels), -1)
+    for zone_label, feature in zip(un_zone_labels, features):
+        per_zone_labels = feature.result()
+        result_labels[zone_labels == zone_label] = per_zone_labels + zone_label * 10000
+
+    # 关闭线程池
+    executor.shutdown(wait=True)
+
+    if np.sum(result_labels == -1) > 0:
+        raise ValueError("批量排线失败，部分区域未能分配标签。请检查输入数据。")
+
+    # 将result_labels转换为顺序标签
+    un_result_labels = np.unique(result_labels)
+    sorted_result_labels = np.zeros_like(result_labels)
+    for i, label in enumerate(un_result_labels):
+        sorted_result_labels[result_labels == label] = i
+
+    return sorted_result_labels
+
+
+def duration_limited_cluster(points: np.ndarray, warehouse_coord: Tuple[float, float], per_delivery_duration: int,
+                             work_duration: int, init_cluster_size: int = 100, zone: int = 1):
+    num_clusters = math.ceil(points.shape[0] / init_cluster_size)
+    centroids = random_choice(points, num_clusters)
+    clusterer = DurationLimitedClusterer(warehouse_coord, points, per_delivery_duration, work_duration)
+    labels, _ = clusterer.clustering(centroids, step=3, max_iter=30, zone=zone)
+    return labels

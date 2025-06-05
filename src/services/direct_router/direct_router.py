@@ -1,9 +1,12 @@
 from typing import Tuple, Optional, List
+import Pyro5.server
+
 from src.services.direct_router.cache_manager import CacheManager
 from src.services.direct_router.direct_router_executor import DirectRouterProcessExecutor
-from src.services.direct_router.worker import Worker
+from src.services.direct_router.direct_router_worker import DirectRouterWorker
 
 
+@Pyro5.server.expose
 class DirectRouter:
 
     @staticmethod
@@ -59,10 +62,10 @@ class DirectRouter:
         return [cache_manager.get_from_cache(start_id, end_id) for start_id, end_id in point_pairs_list]
 
     @staticmethod
-    def shutdown():
-        """关闭进程池"""
-        CacheManager().shutdown()
+    def connected() -> bool:
+        """ 检查RPC服务器是否连接成功 """
+        return True
 
 
 def calc_path_duration_global(point_pairs: Tuple[int, int]) -> float:
-    return Worker().calc_path_duration(point_pairs)
+    return DirectRouterWorker().calc_path_duration(point_pairs)

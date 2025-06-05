@@ -3,8 +3,9 @@ import numpy as np
 import networkx as nx
 from typing import Tuple, List, Dict, Optional
 from itertools import pairwise
+
+from src.services.direct_router.direct_router_rpc_client import DirectRouterRpcClient
 from src.services.geo_indexer.geo_indexer import GeoIndexer
-from src.services.rpc_manager.rpc_client import RPCClient
 
 
 class MultiStopRouterWorker:
@@ -30,14 +31,15 @@ class MultiStopRouterWorker:
             ids = route_node_ids
         if len(ids) < 2:
             return 0.0
-        point_pairs_list = list(pairwise(ids))
-        duration_list = RPCClient().batch_calc_path_duration(point_pairs_list)
+        point_pairs_list = list(pairwise(map(int, ids)))
+        duration_list = DirectRouterRpcClient().batch_calc_path_duration(point_pairs_list)
         return sum(duration_list)
 
     @staticmethod
-    def _routing(waypoints: np.ndarray, start_coord: Optional[Tuple[float, float]] = None):
+    def _routing(waypoints: np.ndarray, start_coord: Optional[Tuple[float, float]] = None) \
+            -> Tuple[List[int], List[int]]:
         """ 计算多点路径 """
-        rpc_client = RPCClient()
+        direct_router_rpc_client = DirectRouterRpcClient()
         geo_indexer = GeoIndexer()
 
         if len(waypoints) == 0:
@@ -60,13 +62,13 @@ class MultiStopRouterWorker:
         node_ids = list(id_to_index.keys())
 
         if len(node_ids) == 1:  # 不可能为0，因为至少有一个点；为1的原因是所有点都在同一个节点上，想到于他们直接没有距离，任意排序即可。
-            return list(id_to_index.keys()), range(len(waypoints))
+            return list(id_to_index.keys()), list(range(len(waypoints)))
         elif len(node_ids) == 2:
             # 如果只有两个节点，则直接返回这两个节点的索引和ID
             route_indexes = []
             for node_id in node_ids:
                 route_indexes.extend(id_to_index[node_id])
-            return node_ids, np.argsort(route_indexes)
+            return node_ids, list(map(int, np.argsort(route_indexes)))
 
         start_id = None
         if start_coord is not None:
@@ -86,10 +88,10 @@ class MultiStopRouterWorker:
                 key = f"{min(p1, p2)}_{max(p1, p2)}"
                 if p1 == p2 or key in added_set:
                     continue
-                point_pairs_list.append((p1, p2))
+                point_pairs_list.append((int(p1), int(p2)))
                 added_set.add(key)
 
-        rpc_client.batch_calc_path_duration(point_pairs_list)
+        direct_router_rpc_client.batch_calc_path_duration(point_pairs_list)
 
         # 构建图
         g = nx.Graph()
@@ -97,7 +99,7 @@ class MultiStopRouterWorker:
             p1 = node_ids[i]
             for j in range(i + 1, count_nodes):
                 p2 = node_ids[j]
-                duration = rpc_client.get_path_duration_from_cache(p1, p2)
+                duration = direct_router_rpc_client.get_path_duration_from_cache(p1, p2)
                 g.add_edge(p1, p2, weight=duration)
 
         # 规划线路，path是一个节点ID的列表，且线路是一个闭合的环，即起点和终点是同一个节点
@@ -118,11 +120,10 @@ class MultiStopRouterWorker:
             if node_id not in id_to_index:
                 continue  # 跳过起点
             route_node_ids.append(node_id)
-            for i in id_to_index[node_id]:
-                route_indexes.append(i)
+            route_indexes.extend(id_to_index[node_id])
 
         if len(route_indexes) != len(waypoints):
             raise ValueError('路径规划出错')
 
         # 按照waypoints的顺序返回每个点的序号
-        return route_node_ids, np.argsort(route_indexes)
+        return route_node_ids, list(map(int, np.argsort(route_indexes)))

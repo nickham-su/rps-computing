@@ -18,19 +18,22 @@ class CacheManager:
     _instance = None
     _lock = threading.Lock()
 
-    def __new__(cls):
+    def __new__(cls, save_to_file: bool = False):
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
                     cls._instance._queue = Queue()
-                    cls._instance._file_lock = threading.Lock()
                     cls._instance._cache_lock = RWLock()
                     cls._instance._cache = {}  # Dict[Tuple[int, int], float]
-                    cls._instance._worker_thread = threading.Thread(target=cls._instance._worker, daemon=True)
-                    cls._instance._running = True
+                    cls._instance._file_lock = threading.Lock()
+                    cls._instance._worker_thread = None
+                    cls._instance._running = False
                     cls._instance._load_cache()
-                    cls._instance._worker_thread.start()
+                    if save_to_file:
+                        cls._instance._running = True
+                        cls._instance._worker_thread = threading.Thread(target=cls._instance._worker, daemon=True)
+                        cls._instance._worker_thread.start()
 
         return cls._instance
 
@@ -62,8 +65,8 @@ class CacheManager:
         key = self._generate_key(start_id, end_id)
         with self._cache_lock.writer_lock:
             self._cache[key] = duration
-        # 队列中直接存储三个字段
-        self._queue.put((key[0], key[1], duration))
+        if self._running:
+            self._queue.put((key[0], key[1], duration))
 
     def get_from_cache(self, start_id: int, end_id: int) -> Optional[float]:
         """从缓存中获取数据"""
@@ -120,7 +123,7 @@ class CacheManager:
     def shutdown(self):
         """关闭写入器并刷新剩余数据"""
         self._running = False
-        if self._worker_thread.is_alive():
+        if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join()
 
         remaining_items = []

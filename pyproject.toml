@@ -19,7 +19,8 @@ dependencies = [
     "geopandas (>=1.0.1,<2.0.0)",
     "rwlock (>=0.0.7,<0.0.8)",
     "matplotlib (>=3.10.3,<4.0.0)",
-    "rtree (>=1.4.0,<2.0.0)"
+    "rtree (>=1.4.0,<2.0.0)",
+    "pyro5 (>=5.15,<6.0)"
 ]
 
 [tool.poetry]

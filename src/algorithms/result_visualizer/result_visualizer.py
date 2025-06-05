@@ -6,8 +6,9 @@ from datetime import datetime
 import gzip
 from typing import Optional, Dict
 from src.algorithms.result_visualizer.modules.draw_map import draw_map
+from src.services.direct_router.direct_router_rpc_client import DirectRouterRpcClient
 from src.services.geo_indexer.geo_indexer import GeoIndexer
-from src.services.rpc_manager.rpc_client import RPCClient
+from src.services.multi_stop_router.multi_stop_router_rpc_client import MultiStopRouterRpcClient
 
 
 class ResultVisualizer:
@@ -24,20 +25,21 @@ class ResultVisualizer:
 
     def _calc_route_series(self):
         self.route_series = np.full(self.points.shape[0], -1)
-        labels = np.unique(self.labels)
+        un_labels = np.unique(self.labels)
         batch_calc_params = [
-            (self.points[self.labels == label], self.warehouse_coord) for label in labels
+            ([(float(lat), float(lon)) for lat, lon in self.points[self.labels == l]], self.warehouse_coord)
+            for l in un_labels
         ]
         geo_indexer = GeoIndexer()
-        rpc_client = RPCClient()
-        results = rpc_client.batch_calc_route_duration_with_indexes(batch_calc_params)
-        for (duration, indexes), label in zip(results, labels):
+        direct_router_rpc_client = DirectRouterRpcClient()
+        results = MultiStopRouterRpcClient().batch_calc_route_duration_with_indexes(batch_calc_params)
+        for (duration, indexes), label in zip(results, un_labels):
             self.route_driving_duration[label] = duration
             self.route_series[self.labels == label] = np.array(indexes) + 1
             cluster_points = self.points[self.labels == label]
             first_index = np.argmin(indexes)
             lat, lon = cluster_points[first_index]
-            self.route_first_point_duration[label] = rpc_client.calc_path_duration(
+            self.route_first_point_duration[label] = direct_router_rpc_client.calc_path_duration(
                 geo_indexer.get_nearest_node_id(self.warehouse_coord),
                 geo_indexer.get_nearest_node_id((lat, lon))
             )

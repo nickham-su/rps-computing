@@ -1,7 +1,7 @@
 from typing import Tuple
 
 
-class Worker:
+class DirectRouterWorker:
     _instance = None
 
     def __new__(cls):
@@ -20,7 +20,7 @@ class Worker:
                 return haversine(coord1, coord2) / 60 * 3600
 
             def _find_path_duration(start_id: int, end_id: int) -> float:
-                return nx.astar_path_length(g, start_id, end_id, weight='weight', heuristic=heuristic)
+                return float(nx.astar_path_length(g, start_id, end_id, weight='weight', heuristic=heuristic))
 
             cls._instance._calc_path_duration = _find_path_duration
 

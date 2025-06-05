@@ -20,10 +20,10 @@ class GeoIndexer:
         """ 获取最近节点ID """
         if self.kd_tree is None:
             raise RuntimeError("Geo index not initialized")
-        key = f'{point[0]}_{point[1]}'
+        key = (point[0], point[1])
         if cached := self.nearest_node_cache.get(key):
             return cached
         _, ind = self.kd_tree.query([point], k=1)
-        nearest_node_id = self.node_ids.iloc[ind[0][0]]
+        nearest_node_id = int(self.node_ids.iloc[ind[0][0]])
         self.nearest_node_cache[key] = nearest_node_id
-        return int(nearest_node_id)
+        return nearest_node_id

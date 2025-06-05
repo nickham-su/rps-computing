@@ -1,8 +1,14 @@
+from typing import Tuple
+
 import click
 import pandas as pd
+import numpy as np
 import math
-from src.algorithms.clustering_algorithm.duration_limited_clusterer import DurationLimitedClusterer
-from src.services.rpc_manager.rpc_server import RPCServer
+from src.algorithms.clustering_algorithm.duration_limited_clusterer import batch_duration_limited_cluster, \
+    DurationLimitedClusterer, duration_limited_cluster
+from src.algorithms.clustering_algorithm.size_limited_clusterer import SizeLimitedClusterer
+from src.services.direct_router.direct_router_rpc_server import DirectRouterRpcServer
+from src.services.multi_stop_router.multi_stop_router_rpc_server import MultiStopRouterRPCServer
 from src.utils.utils import random_choice
 from src.data.data_loader import load_map_data, get_bbox
 from src.algorithms.result_visualizer.result_visualizer import ResultVisualizer
@@ -55,26 +61,24 @@ def main(warehouse_coord, orders_excel, per_delivery_duration, work_duration):
         click.echo(f"加载地图数据...")
         load_map_data(bbox)
 
-        # 启动 DirectRouter RPC 服务器
-        server = RPCServer()
-        server.start_server(bbox=bbox)
+        # 启动DirectRouterRpcServer
+        direct_router_rpc_server = DirectRouterRpcServer()
+        direct_router_rpc_server.start_server(bbox=bbox)
+
+        # 启动MultiStopRouterRPCServer
+        multi_stop_router_rpc_server = MultiStopRouterRPCServer()
+        multi_stop_router_rpc_server.start_server(bbox=bbox)
 
         # 预处理数据
         click.echo("正在预处理数据...")
-        preprocess_data(warehouse_coord, points, 200)
+        preprocess_data(warehouse_coord, points, 100)
 
-        # 随机初始化聚类中心
-        num_clusters = math.ceil(points.shape[0] / 60)
-        click.echo(f"正在为 {num_clusters} 个聚类随机初始化中心点...")
-        centroids = random_choice(points, num_clusters)
-
-        # 执行带有时长限制的聚类算法
-        click.echo("开始执行带有时长限制的聚类算法...")
-        clusterer = DurationLimitedClusterer(
-            warehouse_coord, points, per_delivery_duration, work_duration
-        )
-        labels, final_centroids = clusterer.clustering(centroids, step=3, max_iter=30)
-        click.echo("聚类完成。")
+        if points.shape[0] < 2000:
+            click.echo(f"运单数量: {len(points)}，进行单进程聚类...")
+            labels = duration_limited_cluster(points, warehouse_coord, per_delivery_duration, work_duration)
+        else:
+            click.echo(f"运单数量: {len(points)}，进行并行聚类...")
+            labels = batch_cluster(bbox, points, warehouse_coord, per_delivery_duration, work_duration)
 
         # 可视化并导出结果
         click.echo("正在导出和可视化结果...")
@@ -86,6 +90,48 @@ def main(warehouse_coord, orders_excel, per_delivery_duration, work_duration):
         click.echo(f'<done>{output_filename}</done>')  # 使用 click.echo 输出完成信息
     except Exception as e:
         click.echo(f'<error>{str(e)}</error>')  # 使用 click.echo 输出错误信息
+
+
+def batch_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray,
+                  warehouse_coord: Tuple[float, float], per_delivery_duration: int, work_duration: int) -> np.ndarray:
+    """ 拆分区域，并行聚类 """
+    click.echo(f"运单数量: {len(points)}，进行区域拆分并行聚类...")
+    mini_cluster_size = 10  # 每个微簇的点数
+    zone_size = min(1500, round(points.shape[0] / 3))  # 每个区域的点数
+    # 1.聚类微簇
+    click.echo("正在进行微簇聚类...")
+    num_clusters = math.ceil(points.shape[0] / mini_cluster_size)
+    centroids = random_choice(points, num_clusters)
+    clusterer = SizeLimitedClusterer(points, mini_cluster_size)
+    mini_cluster_labels, _ = clusterer.clustering(centroids, step=1, max_iter=30)
+
+    # 2.每个微簇取一个点
+    mini_cluster_points = []
+    for l in np.unique(mini_cluster_labels):
+        ps = points[mini_cluster_labels == l]
+        mini_cluster_center = np.mean(points[mini_cluster_labels == 0], axis=0)
+        center_index = np.argmin(np.linalg.norm(mini_cluster_center - ps, axis=1))
+        mini_cluster_points.append(ps[center_index])
+    mini_cluster_points = np.array(mini_cluster_points)
+
+    # 3.区域聚类
+    click.echo("正在进行区域聚类...")
+    num_clusters = math.ceil(mini_cluster_points.shape[0] / round(zone_size / mini_cluster_size))
+    centroids = random_choice(mini_cluster_points, num_clusters)
+    clusterer = SizeLimitedClusterer(mini_cluster_points, round(zone_size / mini_cluster_size))
+    mini_cluster_to_zone_labels, _ = clusterer.clustering(centroids, step=3, max_iter=30)
+
+    # 4.将微簇标签映射到区域标签，得到 zone_labels
+    un_mini_cluster_labels = np.unique(mini_cluster_labels)
+    zone_labels = np.full(len(mini_cluster_labels), -1)
+    for l in mini_cluster_to_zone_labels:
+        zone_labels[np.isin(mini_cluster_labels, un_mini_cluster_labels[mini_cluster_to_zone_labels == l])] = l
+
+    # 5.批量聚类
+    click.echo(f"正在从 {len(np.unique(zone_labels))} 个区域中进行批量聚类...")
+    result_labels = batch_duration_limited_cluster(bbox, points, zone_labels, warehouse_coord, per_delivery_duration,
+                                                   work_duration)
+    return result_labels
 
 
 if __name__ == '__main__':

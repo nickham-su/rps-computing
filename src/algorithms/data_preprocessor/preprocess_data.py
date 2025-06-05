@@ -3,14 +3,14 @@ import numpy as np
 from datetime import datetime
 from typing import Tuple, List, Set
 
+from src.services.direct_router.direct_router_rpc_client import DirectRouterRpcClient
 from src.services.geo_indexer.geo_indexer import GeoIndexer
-from src.services.rpc_manager.rpc_client import RPCClient
 
 
 def preprocess_data(warehouse_coord: Tuple[float, float], points: np.ndarray, k: int):
     """ 预处理数据 """
     geo_service = GeoIndexer()
-    rpc_client = RPCClient()
+    direct_router_rpc_client = DirectRouterRpcClient()
 
     # 待处理的点对
     point_pairs_list: List[Tuple[int, int]] = []
@@ -23,7 +23,7 @@ def preprocess_data(warehouse_coord: Tuple[float, float], points: np.ndarray, k:
         key = f"{min(start_id, end_id)}_{max(start_id, end_id)}"
         if start_id == end_id \
                 or key in added_set \
-                or rpc_client.get_path_duration_from_cache(start_id, end_id):
+                or direct_router_rpc_client.get_path_duration_from_cache(start_id, end_id):
             continue
         point_pairs_list.append((start_id, end_id))
         added_set.add(key)
@@ -38,7 +38,7 @@ def preprocess_data(warehouse_coord: Tuple[float, float], points: np.ndarray, k:
             key = f"{min(start_id, end_id)}_{max(start_id, end_id)}"
             if start_id == end_id \
                     or key in added_set \
-                    or rpc_client.get_path_duration_from_cache(start_id, end_id):
+                    or direct_router_rpc_client.get_path_duration_from_cache(start_id, end_id):
                 continue
             point_pairs_list.append((start_id, end_id))
             added_set.add(key)
@@ -50,6 +50,6 @@ def preprocess_data(warehouse_coord: Tuple[float, float], points: np.ndarray, k:
         current_time = datetime.now()
         click.echo(f'预处理进度:{i}/{len(point_pairs_list)} - {current_time.strftime("%H:%M:%S")}')
         chunk = point_pairs_list[i:i + chunk_size]
-        rpc_client.batch_calc_path_duration(chunk)
+        direct_router_rpc_client.batch_calc_path_duration(chunk)
 
     click.echo('预处理完成')
