@@ -5,13 +5,14 @@ import click
 import pandas as pd
 import time
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional, Tuple, List  # 确保导入 List
 from rwlock import RWLock
 
 CACHE_DIR = './cache'
 CACHE_FILE = os.path.join(CACHE_DIR, 'path_duration.csv')
 BATCH_SIZE = 1000  # 每次写入的批量大小
 FLUSH_INTERVAL = 10.0  # 刷新间隔（秒）
+NUM_SHARDS = 16  # 缓存分片数量, 可以根据CPU核心数或经验调整
 
 
 class CacheManager:
@@ -24,8 +25,9 @@ class CacheManager:
                 if cls._instance is None:
                     cls._instance = super().__new__(cls)
                     cls._instance._queue = Queue()
-                    cls._instance._cache_lock = RWLock()
-                    cls._instance._cache = {}  # Dict[Tuple[int, int], float]
+                    # 初始化分片缓存和对应的锁
+                    cls._instance._shards: List[Dict[Tuple[int, int], float]] = [{} for _ in range(NUM_SHARDS)]
+                    cls._instance._shard_locks: List[RWLock] = [RWLock() for _ in range(NUM_SHARDS)]
                     cls._instance._file_lock = threading.Lock()
                     cls._instance._worker_thread = None
                     cls._instance._running = False
@@ -34,48 +36,69 @@ class CacheManager:
                         cls._instance._running = True
                         cls._instance._worker_thread = threading.Thread(target=cls._instance._worker, daemon=True)
                         cls._instance._worker_thread.start()
-
         return cls._instance
 
-    def _generate_key(self, start_id: int, end_id: int) -> Tuple[int, int]:
-        """生成缓存键 - 返回元组"""
-        return min(start_id, end_id), max(start_id, end_id)
-
     def _load_cache(self):
-        """加载已有缓存"""
+        """加载已有缓存到各个分片"""
         if not os.path.exists(CACHE_DIR):
             os.makedirs(CACHE_DIR)
 
         if os.path.exists(CACHE_FILE):
             try:
-                cache = pd.read_csv(
+                df_cache = pd.read_csv(
                     CACHE_FILE,
                     dtype={'start_id': int, 'end_id': int, 'duration': float}
                 )
-                with self._cache_lock.writer_lock:
-                    for _, row in cache.iterrows():
-                        key = self._generate_key(row.start_id, row.end_id)
-                        self._cache[key] = float(row.duration)
-                click.echo(f"缓存加载成功，已加载 {len(self._cache)} 条记录")
+                loaded_count = 0
+                for _, row in df_cache.iterrows():
+                    # 内联 _generate_key
+                    start_id = int(row.start_id)  # 确保是整数类型
+                    end_id = int(row.end_id)  # 确保是整数类型
+                    key = (min(start_id, end_id), max(start_id, end_id))
+
+                    # 内联 _get_shard 逻辑
+                    shard_index = hash(key) % NUM_SHARDS
+                    cache_shard = self._shards[shard_index]
+                    lock = self._shard_locks[shard_index]
+
+                    with lock.writer_lock:
+                        cache_shard[key] = float(row.duration)
+                    loaded_count += 1
+                click.echo(f"缓存加载成功，已加载 {loaded_count} 条记录到 {NUM_SHARDS} 个分片中")
             except Exception as e:
                 click.echo(f"加载缓存失败: {e}")
 
     def add_item(self, start_id: int, end_id: int, duration: float):
-        """添加一项到写入队列"""
-        key = self._generate_key(start_id, end_id)
-        with self._cache_lock.writer_lock:
-            self._cache[key] = duration
+        """添加一项到写入队列，并更新对应分片的缓存"""
+        # 内联 _generate_key
+        key = (min(start_id, end_id), max(start_id, end_id))
+
+        # 内联 _get_shard 逻辑
+        shard_index = hash(key) % NUM_SHARDS
+        cache_shard = self._shards[shard_index]
+        lock = self._shard_locks[shard_index]
+
+        with lock.writer_lock:
+            cache_shard[key] = duration
+
         if self._running:
             self._queue.put((key[0], key[1], duration))
 
     def get_from_cache(self, start_id: int, end_id: int) -> Optional[float]:
-        """从缓存中获取数据"""
+        """从对应的分片缓存中获取数据"""
         if start_id == end_id:
             return 0.0
 
-        key = self._generate_key(start_id, end_id)
-        with self._cache_lock.reader_lock:
-            return self._cache.get(key)
+        # 内联 _generate_key
+        key = (min(start_id, end_id), max(start_id, end_id))
+
+        # 内联 _get_shard 逻辑
+        shard_index = hash(key) % NUM_SHARDS
+        cache_shard = self._shards[shard_index]
+        lock = self._shard_locks[shard_index]
+
+        with lock.reader_lock:
+            return cache_shard.get(key)
 
     def _worker(self):
         """后台工作线程处理写入操作"""
@@ -126,10 +149,14 @@ class CacheManager:
         if self._worker_thread and self._worker_thread.is_alive():
             self._worker_thread.join()
 
+        # 处理队列中剩余的数据
         remaining_items = []
         while not self._queue.empty():
-            remaining_items.append(self._queue.get())
-            self._queue.task_done()
+            try:  # 添加try-except以防万一在清空队列时发生意外
+                remaining_items.append(self._queue.get_nowait())  # 使用get_nowait避免阻塞
+                self._queue.task_done()
+            except Exception:  # queue.Empty or other
+                break
 
         if remaining_items:
             self._flush_buffer(remaining_items)
