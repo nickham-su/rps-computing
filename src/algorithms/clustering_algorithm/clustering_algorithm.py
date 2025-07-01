@@ -133,10 +133,13 @@ class ClusteringAlgorithm(ABC):
                     return self.assign_clusters(centroids, can_add_centroid=False)
             elif saturation_sum < count_clusters - cluster_threshold:
                 remove_count = round(count_clusters - saturation_sum)
-                # 饱和度最低的簇中删除质心
-                remove_labels = np.argsort(clusters_saturation_ratio)[:remove_count]
-                centroids = np.delete(centroids, remove_labels, axis=0)
-                return self.assign_clusters(centroids, can_add_centroid=False)
+                # 至少保留两个质心
+                remove_count = min(remove_count, count_clusters - 2)
+                if remove_count > 0:
+                    # 饱和度最低的簇中删除质心
+                    remove_labels = np.argsort(clusters_saturation_ratio)[:remove_count]
+                    centroids = np.delete(centroids, remove_labels, axis=0)
+                    return self.assign_clusters(centroids, can_add_centroid=False)
             elif np.max(clusters_saturation_ratio) > self.split_cluster_threshold:
                 # 在饱和度最高的簇，添加一个质心，将其拆分
                 max_label = np.argmax(clusters_saturation_ratio)

@@ -14,18 +14,18 @@ coord_cache: Optional[Dict[int, Tuple[float, float]]] = None  # 节点坐标缓�
 
 # 道路类型的速度
 way_type_to_speed = {
-    "motorway": 100,
-    "motorway_link": 60,
-    "trunk": 90,
-    "trunk_link": 50,
-    "primary": 80,
+    "motorway": 122,
+    "motorway_link": 90,
+    "trunk": 100,
+    "trunk_link": 60,
+    "primary": 58,
     "primary_link": 45,
-    "secondary": 55,
+    "secondary": 52,
     "secondary_link": 35,
-    "tertiary": 45,
-    "tertiary_link": 30,
+    "tertiary": 51,
+    "tertiary_link": 33,
     "unclassified": 40,
-    "residential": 30,
+    "residential": 42,
 }
 cache_dir = './cache'
 if not os.path.exists(cache_dir):

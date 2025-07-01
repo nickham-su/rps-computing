@@ -98,8 +98,8 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
 
 
 def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray, zone_labels: np.ndarray,
-                                   warehouse_coord: Tuple[float, float], per_delivery_duration: int, work_duration: int,
-                                   init_cluster_size: int = 100):
+                                   warehouse_coord: Tuple[float, float], per_delivery_duration: int,
+                                   work_duration: int):
     un_zone_labels = np.unique(zone_labels)
 
     workers = min(math.ceil(os.cpu_count() / 2), len(un_zone_labels))
@@ -111,7 +111,7 @@ def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], poin
     for zone_label in un_zone_labels:
         zone_points = points[zone_labels == zone_label]
         features.append(executor.submit(duration_limited_cluster, zone_points, warehouse_coord,
-                                        per_delivery_duration, work_duration, init_cluster_size, int(zone_label) + 1))
+                                        per_delivery_duration, work_duration, int(zone_label) + 1))
 
     result_labels = np.full(len(zone_labels), -1)
     for zone_label, feature in zip(un_zone_labels, features):
@@ -134,9 +134,9 @@ def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], poin
 
 
 def duration_limited_cluster(points: np.ndarray, warehouse_coord: Tuple[float, float], per_delivery_duration: int,
-                             work_duration: int, init_cluster_size: int = 100, zone: int = 1):
-    num_clusters = math.ceil(points.shape[0] / init_cluster_size)
-    centroids = random_choice(points, num_clusters)
+                             work_duration: int, zone: int = 1):
+    num_clusters = math.ceil(points.shape[0] / (work_duration / 3600 * 5))  # 每小时5单是一个偏小的假设
+    centroids = random_choice(points, max(num_clusters, 2))  # 至少需要2个中心点
     clusterer = DurationLimitedClusterer(warehouse_coord, points, per_delivery_duration, work_duration)
     labels, _ = clusterer.clustering(centroids, step=3, max_iter=30, zone=zone)
     return labels
