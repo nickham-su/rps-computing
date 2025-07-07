@@ -4,18 +4,29 @@ import os
 
 import click
 import numpy as np
-from typing import Tuple, Dict
+from typing import Tuple, Dict, List
 from src.algorithms.clustering_algorithm.clustering_algorithm import ClusteringAlgorithm
 from src.data.data_loader import load_map_data
+from src.services.direct_router.direct_router_rpc_client import DirectRouterRpcClient
 from src.services.multi_stop_router.multi_stop_router_rpc_client import MultiStopRouterRpcClient
 from src.utils.utils import random_choice
 
 
+def find_closest_warehouse(cluster_points: np.ndarray, warehouse_coords: List[Tuple[float, float]]) -> Tuple[
+    float, float]:
+    """根据簇中心点找到距离最近的仓库"""
+    cluster_center = np.mean(cluster_points, axis=0)
+    warehouse_array = np.array(warehouse_coords)
+    distances = np.linalg.norm(cluster_center - warehouse_array, axis=1)
+    closest_idx = np.argmin(distances)
+    return warehouse_coords[closest_idx]
+
+
 class DurationLimitedClusterer(ClusteringAlgorithm):
-    def __init__(self, warehouse_coord: Tuple[float, float], points: np.ndarray,
+    def __init__(self, warehouse_coords: List[Tuple[float, float]], points: np.ndarray,
                  per_delivery_duration: int, work_duration: int):
         super().__init__(points, 1.3)
-        self.warehouse_coord = warehouse_coord
+        self.warehouse_coords = warehouse_coords
         self.per_delivery_duration = per_delivery_duration
         self.work_duration = work_duration
         self.min_indicator = math.inf
@@ -55,7 +66,8 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
                     refresh_labels.append(cluster_label)
 
         batch_calc_route_duration_params = [
-            ([(float(lat), float(lon)) for lat, lon in self.points[labels == l]], self.warehouse_coord)
+            ([(float(lat), float(lon)) for lat, lon in self.points[labels == l]],
+             find_closest_warehouse(self.points[labels == l], self.warehouse_coords))
             for l in refresh_labels
         ]
         # 在途时间
@@ -85,7 +97,8 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
     def calc_duration(self, labels: np.ndarray) -> (float, float, float):
         un_labels = np.unique(labels)
         batch_calc_route_duration_params = [
-            ([(float(lat), float(lon)) for lat, lon in self.points[labels == l]], self.warehouse_coord)
+            ([(float(lat), float(lon)) for lat, lon in self.points[labels == l]],
+             find_closest_warehouse(self.points[labels == l], self.warehouse_coords))
             for l in un_labels
         ]
         # 在途时间
@@ -98,23 +111,27 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
 
 
 def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray, zone_labels: np.ndarray,
-                                   warehouse_coord: Tuple[float, float], per_delivery_duration: int,
+                                   warehouse_coords: List[Tuple[float, float]], per_delivery_duration: int,
                                    work_duration: int):
     un_zone_labels = np.unique(zone_labels)
 
     workers = min(math.ceil(os.cpu_count() / 2), len(un_zone_labels))
-    # workers = 2
+    click.echo(f"使用 {workers} 个工作线程进行并行聚类...")
     executor = ProcessPoolExecutor(max_workers=workers)
     list(executor.map(load_map_data, [bbox] * workers))
-    features = []
+    click.echo("完成加载地图数据，开始进行区域聚类...")
 
-    for zone_label in un_zone_labels:
+    # 计算每个区域的订单数量并按数量从多到少排序
+    zone_counts = [(zone_label, np.sum(zone_labels == zone_label)) for zone_label in un_zone_labels]
+    sorted_zones = sorted(zone_counts, key=lambda x: x[1], reverse=True)
+    features = []
+    for zone_label, _ in sorted_zones:
         zone_points = points[zone_labels == zone_label]
-        features.append(executor.submit(duration_limited_cluster, zone_points, warehouse_coord,
+        features.append(executor.submit(duration_limited_cluster, zone_points, warehouse_coords,
                                         per_delivery_duration, work_duration, int(zone_label) + 1))
 
     result_labels = np.full(len(zone_labels), -1)
-    for zone_label, feature in zip(un_zone_labels, features):
+    for (zone_label, _), feature in zip(sorted_zones, features):
         per_zone_labels = feature.result()
         result_labels[zone_labels == zone_label] = per_zone_labels + zone_label * 10000
 
@@ -133,10 +150,15 @@ def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], poin
     return sorted_result_labels
 
 
-def duration_limited_cluster(points: np.ndarray, warehouse_coord: Tuple[float, float], per_delivery_duration: int,
+def duration_limited_cluster(points: np.ndarray, warehouse_coords: List[Tuple[float, float]],
+                             per_delivery_duration: int,
                              work_duration: int, zone: int = 1):
+    # 初始化RPC客户端
+    DirectRouterRpcClient().init()
+    MultiStopRouterRpcClient().init()
+
     num_clusters = math.ceil(points.shape[0] / (work_duration / 3600 * 5))  # 每小时5单是一个偏小的假设
     centroids = random_choice(points, max(num_clusters, 2))  # 至少需要2个中心点
-    clusterer = DurationLimitedClusterer(warehouse_coord, points, per_delivery_duration, work_duration)
+    clusterer = DurationLimitedClusterer(warehouse_coords, points, per_delivery_duration, work_duration)
     labels, _ = clusterer.clustering(centroids, step=3, max_iter=30, zone=zone)
     return labels

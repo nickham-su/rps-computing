@@ -1,5 +1,5 @@
 import os
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 import click
 import numpy as np
 import pandas as pd
@@ -32,17 +32,13 @@ if not os.path.exists(cache_dir):
     os.makedirs(cache_dir)
 
 
-def get_bbox(warehouse_coord: Tuple[float, float], points: np.ndarray) -> Tuple[float, float, float, float]:
-    # 获取points的范围
-    min_latitude = min(points[:, 0])
-    max_latitude = max(points[:, 0])
-    min_longitude = min(points[:, 1])
-    max_longitude = max(points[:, 1])
-    # 与仓库坐标比较
-    min_latitude = min(min_latitude, warehouse_coord[0])
-    max_latitude = max(max_latitude, warehouse_coord[0])
-    min_longitude = min(min_longitude, warehouse_coord[1])
-    max_longitude = max(max_longitude, warehouse_coord[1])
+def get_bbox(warehouse_coords: List[Tuple[float, float]], points: np.ndarray) -> Tuple[float, float, float, float]:
+    # 计算所有坐标的边界(订单点 + 所有仓库)
+    all_coords = np.vstack([points, np.array(warehouse_coords)])
+    min_latitude = np.min(all_coords[:, 0])
+    max_latitude = np.max(all_coords[:, 0])
+    min_longitude = np.min(all_coords[:, 1])
+    max_longitude = np.max(all_coords[:, 1])
 
     # 计算范围的宽度和高度（公里）
     # 纬度范围（南北方向）

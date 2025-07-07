@@ -1,6 +1,8 @@
 import threading
+import time
 from typing import List, Tuple, Optional
 import Pyro5.client
+import click
 
 
 class DirectRouterRpcClient:
@@ -21,6 +23,15 @@ class DirectRouterRpcClient:
                         raise RuntimeError("无法获取DirectRouter实例，请检查RPC服务器是否已启动")
                     cls._instance._cache = {}  # Dict[Tuple[int, int], float]
         return cls._instance
+
+    def init(self):
+        """ 初始化客户端，在fork进程时，在linux平台会复制_instance，但连接不可用，所以需要重新初始化 """
+        from src.services.direct_router.direct_router_rpc_server import SERVER_ADDRESS, SERVER_PORT, PYRO_OBJECT_ID
+        self._direct_router = Pyro5.client.Proxy(f"PYRO:{PYRO_OBJECT_ID}@{SERVER_ADDRESS}:{SERVER_PORT}")
+        self._direct_router._pyroSerializer = 'marshal'
+        if self._direct_router is None:
+            raise RuntimeError("无法获取DirectRouter实例，请检查RPC服务器是否已启动")
+        self._cache = {}
 
     def _generate_key(self, start_id: int, end_id: int) -> Tuple[int, int]:
         """生成缓存键 - 返回元组"""

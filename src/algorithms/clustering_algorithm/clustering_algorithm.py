@@ -5,6 +5,9 @@ import time
 from typing import Tuple, List, Optional
 from abc import ABC, abstractmethod
 from sklearn.neighbors import KDTree
+
+from src.services.direct_router.direct_router_rpc_client import DirectRouterRpcClient
+from src.services.geo_indexer.geo_indexer import GeoIndexer
 from src.utils.utils import random_choice, calc_weighted_centroid, find_nearest_points, max_distance
 
 
@@ -197,9 +200,12 @@ class ClusteringAlgorithm(ABC):
         # 批量查询所有未分配点的最近邻
         distances, indices = kdtree.query(unallocated_points, k=k)
 
+        direct_router_client = DirectRouterRpcClient()
+        geo_indexer = GeoIndexer()
+
         # 处理每个未分配点
         for i in range(unallocated_points.shape[0]):  # i 是未分配点的索引
-            # 初始化簇距离字典
+            current_point = unallocated_points[i]
             cluster_dist = {}  # {label: distance}
             cluster_point = {}  # {label: point}
 
@@ -222,38 +228,60 @@ class ClusteringAlgorithm(ABC):
             while len(dist_arr) < 2:
                 raise Exception("未分配点的最近簇不足2个，请查询逻辑是否正确")
 
-            # 提取最近簇的距离和标签
             first_distance = dist_arr[0]
             second_distance = dist_arr[1]
             first_label = labels_arr[0]
+            second_label = labels_arr[1]
             first_point = cluster_point[first_label]
+            second_point = cluster_point[second_label]
+            current_id = geo_indexer.get_nearest_node_id((current_point[0], current_point[1]))
+            first_id = geo_indexer.get_nearest_node_id((first_point[0], first_point[1]))
+            second_id = geo_indexer.get_nearest_node_id((second_point[0], second_point[1]))
+            duration_arr = direct_router_client.batch_get_path_duration_from_cache(
+                [(current_id, first_id), (current_id, second_id)]
+            )
+            first_duration = duration_arr[0] or 24 * 3600  # 如果没有缓存，使用24小时作为默认值
+            second_duration = duration_arr[1] or 24 * 3600  # 如果没有缓存，使用24小时作为默认值
 
             # 计算最近点到附近已分配点的平均距离
-            d, _ = kdtree.query([first_point], k=3)  # 查询最近的2个点，+1是因为第一个点是自身
+            d, neighbor_indices = kdtree.query([first_point], k=3)  # 查询最近的3个点（包含自身）
             first_to_neighbors_distances = d[0][1:]  # 距离第一个点到其邻近点的距离
             first_to_neighbors_distances = first_to_neighbors_distances[
                 ~np.isnan(first_to_neighbors_distances)]  # 去除NaN值
             first_to_neighbors_distance = np.mean(first_to_neighbors_distances)  # 计算平均距离
+            # 计算最近点到附近已分配点的平均行驶时间
+            nearest_neighbors = allocated_points[neighbor_indices[0][1:]]  # 获取除自身外最近的2个邻居点坐标
+            # 将坐标转换为节点ID并构建查询列表
+            first_node_id = geo_indexer.get_nearest_node_id((first_point[0], first_point[1]))
+            duration_queries = []
+            for neighbor_point in nearest_neighbors:
+                neighbor_id = geo_indexer.get_nearest_node_id((neighbor_point[0], neighbor_point[1]))
+                duration_queries.append((first_node_id, neighbor_id))
+            # 批量查询路线行驶时间
+            neighbor_durations = direct_router_client.batch_get_path_duration_from_cache(duration_queries)
+            valid_durations = [duration for duration in neighbor_durations if duration is not None]
+            first_to_neighbors_duration = np.mean(valid_durations) if valid_durations else 600  # 默认10分钟
 
             # 饱和度权重计算；当前簇饱和度越低，权重越高
             sat_ratio = clusters_saturation_ratio[first_label] if first_label >= 0 else 1.0
             weight_1 = (sat_ratio or 1e-12) ** -7
 
             # 距离权重计算；靠近最近的簇且远离第二近的簇，权重越高；目的是找到紧挨簇边缘的点
-            ratio = second_distance / np.maximum(first_distance, 1e-12)  # 防止除零
-            weight_2 = ratio ** 3 - 0.9
-            weight_2 = 130 if weight_2 > 130 else weight_2
+            distance_ratio = second_duration / np.maximum(first_duration, 1e-12)  # 防止除零
+            weight_2 = distance_ratio ** 2 if distance_ratio < 10 else 10 ** 2
 
             # 跨度权重计算
             # 当前跨度：当前待分配点到最近点已分配点的距离
             # 边界处的跨度：最近点已分配点到其邻近点的平均距离
-            # 跨度权重 = 边界处的跨度 / 当前跨度；当前跨度越大，权重越小，用于过滤分布的边界
-            span = first_to_neighbors_distance / np.maximum(first_distance, 1e-12)  # 防止除零
-            weight_3 = (span * 1.5) ** 2
-            weight_3 = 1 if weight_3 > 1 else weight_3
+            # 跨度权重 = 当前跨度 / 边界处的跨度；当前跨度越大，权重越小;
+            span_ratio = first_duration / np.maximum(first_to_neighbors_duration, 1e-12)  # 防止除零
+            weight_3 = 1 if span_ratio < 2 else (span_ratio - 1) ** -0.4
+
+            span_ratio = first_distance / np.maximum(first_to_neighbors_distance, 1e-12)  # 防止除零
+            weight_4 = 1 if span_ratio < 2 else (span_ratio - 1) ** -1.0
 
             # 计算总权重
-            weights[i] = weight_1 * weight_2 * weight_3
+            weights[i] = weight_1 * weight_2 * weight_3 * weight_4
 
         return weights
 
@@ -277,12 +305,13 @@ class ClusteringAlgorithm(ABC):
             centroids = centroids2
 
             available, savable = self.save_checkpoint(labels)
-            if available:
-                checkpoint_step += 1
             if savable:
                 checkpoint_step = 0
                 checkpoint_labels = labels
                 checkpoint_centroids = centroids1
+            else:
+                if checkpoint_labels is not None:
+                    checkpoint_step += 1
 
             now = datetime.now().strftime("%H:%M:%S")
             click.echo(f'{zone}-{i}, checkpoint_step:{checkpoint_step}, 路线数量：{len(centroids)} - {now}')

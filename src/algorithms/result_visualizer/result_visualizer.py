@@ -4,32 +4,44 @@ import numpy as np
 import pandas as pd
 from datetime import datetime
 import gzip
-from typing import Optional, Dict
-from src.algorithms.result_visualizer.modules.draw_map import draw_map
+from typing import Optional, Dict, List, Tuple
+from src.algorithms.result_visualizer.utils.draw_map import draw_map
 from src.services.direct_router.direct_router_rpc_client import DirectRouterRpcClient
 from src.services.geo_indexer.geo_indexer import GeoIndexer
 from src.services.multi_stop_router.multi_stop_router_rpc_client import MultiStopRouterRpcClient
+from src.algorithms.clustering_algorithm.duration_limited_clusterer import find_closest_warehouse
 
 
 class ResultVisualizer:
 
     def __init__(self, points: np.ndarray, labels: np.ndarray,
-                 warehouse_coord: tuple[float, float], per_delivery_duration: int):
+                 warehouse_coords: List[Tuple[float, float]], per_delivery_duration: int):
         self.points = points
         self.labels = (labels + 1).copy()
-        self.warehouse_coord = warehouse_coord
+        self.warehouse_coords = warehouse_coords
         self.per_delivery_duration = per_delivery_duration
         self.route_series: Optional[np.ndarray] = None
         self.route_driving_duration: Dict[int, float] = {}
         self.route_first_point_duration: Dict[int, float] = {}
+        # 初始化RPC客户端
+        DirectRouterRpcClient().init()
+        MultiStopRouterRpcClient().init()
 
     def _calc_route_series(self):
         self.route_series = np.full(self.points.shape[0], -1)
         un_labels = np.unique(self.labels)
-        batch_calc_params = [
-            ([(float(lat), float(lon)) for lat, lon in self.points[self.labels == l]], self.warehouse_coord)
-            for l in un_labels
-        ]
+        # 为每个簇计算最近仓库并生成路径参数
+        batch_calc_params = []
+        cluster_warehouses = {}  # 记录每个簇对应的最近仓库
+
+        for l in un_labels:
+            cluster_points = self.points[self.labels == l]
+            closest_warehouse = find_closest_warehouse(cluster_points, self.warehouse_coords)
+            cluster_warehouses[l] = closest_warehouse
+            batch_calc_params.append((
+                [(float(lat), float(lon)) for lat, lon in cluster_points],
+                closest_warehouse
+            ))
         geo_indexer = GeoIndexer()
         direct_router_rpc_client = DirectRouterRpcClient()
         results = MultiStopRouterRpcClient().batch_calc_route_duration_with_indexes(batch_calc_params)
@@ -40,12 +52,12 @@ class ResultVisualizer:
             first_index = np.argmin(indexes)
             lat, lon = cluster_points[first_index]
             self.route_first_point_duration[label] = direct_router_rpc_client.calc_path_duration(
-                geo_indexer.get_nearest_node_id(self.warehouse_coord),
+                geo_indexer.get_nearest_node_id(cluster_warehouses[label]),
                 geo_indexer.get_nearest_node_id((lat, lon))
             )
 
     def draw_map(self):
-        return draw_map(self.points, self.labels)
+        return draw_map(self.points, self.labels, self.warehouse_coords)
 
     def statistical(self):
         if self.route_series is None:
