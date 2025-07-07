@@ -267,21 +267,28 @@ class ClusteringAlgorithm(ABC):
             weight_1 = (sat_ratio or 1e-12) ** -7
 
             # 距离权重计算；靠近最近的簇且远离第二近的簇，权重越高；目的是找到紧挨簇边缘的点
-            distance_ratio = second_duration / np.maximum(first_duration, 1e-12)  # 防止除零
-            weight_2 = distance_ratio ** 2 if distance_ratio < 10 else 10 ** 2
+            duration_ratio = second_duration / np.maximum(first_duration, 1e-12)  # 防止除零
+            weight_2_1 = duration_ratio if duration_ratio < 10 else 10
+
+            distance_ratio = second_distance / np.maximum(first_distance, 1e-12)  # 防止除零
+            weight_2_2 = distance_ratio if distance_ratio < 10 else 10
+
+            weight_2 = weight_2_1 * weight_2_2
 
             # 跨度权重计算
             # 当前跨度：当前待分配点到最近点已分配点的距离
             # 边界处的跨度：最近点已分配点到其邻近点的平均距离
             # 跨度权重 = 当前跨度 / 边界处的跨度；当前跨度越大，权重越小;
             span_ratio = first_duration / np.maximum(first_to_neighbors_duration, 1e-12)  # 防止除零
-            weight_3 = 1 if span_ratio < 2 else (span_ratio - 1) ** -0.4
+            weight_3_1 = 1 if span_ratio < 2 else (span_ratio - 1) ** -0.4
 
             span_ratio = first_distance / np.maximum(first_to_neighbors_distance, 1e-12)  # 防止除零
-            weight_4 = 1 if span_ratio < 2 else (span_ratio - 1) ** -1.0
+            weight_3_2 = 1 if span_ratio < 2 else (span_ratio - 1) ** -1.0
+
+            weight_3 = weight_3_1 * weight_3_2
 
             # 计算总权重
-            weights[i] = weight_1 * weight_2 * weight_3 * weight_4
+            weights[i] = weight_1 * weight_2 * weight_3
 
         return weights
 
