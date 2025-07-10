@@ -6,13 +6,21 @@ import pandas as pd
 import time
 import os
 from typing import Dict, Optional, Tuple, List  # 确保导入 List
-from rwlock import RWLock
 
 CACHE_DIR = './cache'
 CACHE_FILE = os.path.join(CACHE_DIR, 'path_duration.csv')
 BATCH_SIZE = 1000  # 每次写入的批量大小
 FLUSH_INTERVAL = 10.0  # 刷新间隔（秒）
 NUM_SHARDS = 16  # 缓存分片数量, 可以根据CPU核心数或经验调整
+
+
+def _deterministic_hash(key: Tuple[int, int]) -> int:
+    """确定性hash函数，用于分片索引计算
+    使用简单的数学运算保证高性能和确定性
+    """
+    # 使用两个质数进行哈希，确保分布均匀
+    a, b = key
+    return (a * 31 + b * 37) % (2**32)
 
 
 class CacheManager:
@@ -27,7 +35,7 @@ class CacheManager:
                     cls._instance._queue = Queue()
                     # 初始化分片缓存和对应的锁
                     cls._instance._shards: List[Dict[Tuple[int, int], float]] = [{} for _ in range(NUM_SHARDS)]
-                    cls._instance._shard_locks: List[RWLock] = [RWLock() for _ in range(NUM_SHARDS)]
+                    cls._instance._shard_locks: List[threading.Lock] = [threading.Lock() for _ in range(NUM_SHARDS)]
                     cls._instance._file_lock = threading.Lock()
                     cls._instance._worker_thread = None
                     cls._instance._running = False
@@ -57,11 +65,11 @@ class CacheManager:
                     key = (min(start_id, end_id), max(start_id, end_id))
 
                     # 内联 _get_shard 逻辑
-                    shard_index = hash(key) % NUM_SHARDS
+                    shard_index = _deterministic_hash(key) % NUM_SHARDS
                     cache_shard = self._shards[shard_index]
                     lock = self._shard_locks[shard_index]
 
-                    with lock.writer_lock:
+                    with lock:
                         cache_shard[key] = float(row.duration)
                     loaded_count += 1
                 click.echo(f"缓存加载成功，已加载 {loaded_count} 条记录到 {NUM_SHARDS} 个分片中")
@@ -74,11 +82,11 @@ class CacheManager:
         key = (min(start_id, end_id), max(start_id, end_id))
 
         # 内联 _get_shard 逻辑
-        shard_index = hash(key) % NUM_SHARDS
+        shard_index = _deterministic_hash(key) % NUM_SHARDS
         cache_shard = self._shards[shard_index]
         lock = self._shard_locks[shard_index]
 
-        with lock.writer_lock:
+        with lock:
             cache_shard[key] = duration
 
         if self._running:
@@ -93,11 +101,11 @@ class CacheManager:
         key = (min(start_id, end_id), max(start_id, end_id))
 
         # 内联 _get_shard 逻辑
-        shard_index = hash(key) % NUM_SHARDS
+        shard_index = _deterministic_hash(key) % NUM_SHARDS
         cache_shard = self._shards[shard_index]
         lock = self._shard_locks[shard_index]
 
-        with lock.reader_lock:
+        with lock:
             return cache_shard.get(key)
 
     def _worker(self):

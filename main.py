@@ -5,6 +5,8 @@ import click
 import pandas as pd
 import numpy as np
 import math
+
+from src.algorithms.clustering_algorithm.cluster_refiner import refine_clusters
 from src.algorithms.clustering_algorithm.duration_limited_clusterer import batch_duration_limited_cluster, \
     DurationLimitedClusterer, duration_limited_cluster
 from src.algorithms.clustering_algorithm.size_limited_clusterer import SizeLimitedClusterer
@@ -111,6 +113,9 @@ def main(warehouse_coord, warehouse_coords, orders_excel, per_delivery_duration,
         else:
             click.echo(f"运单数量: {len(points)}，进行并行聚类...")
             labels = batch_cluster(bbox, points, coords_list, per_delivery_duration, work_duration)
+
+        # 优化聚类结果
+        labels = refine_clusters(points, labels, min_cluster_size=3, small_group_threshold=0.1)
 
         # 可视化并导出结果
         click.echo("正在导出和可视化结果...")

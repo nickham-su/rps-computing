@@ -22,6 +22,7 @@ class DirectRouterRpcClient:
                     if cls._instance._direct_router is None:
                         raise RuntimeError("无法获取DirectRouter实例，请检查RPC服务器是否已启动")
                     cls._instance._cache = {}  # Dict[Tuple[int, int], float]
+                    cls._instance._cache_lock = threading.Lock()
         return cls._instance
 
     def init(self):
@@ -32,6 +33,7 @@ class DirectRouterRpcClient:
         if self._direct_router is None:
             raise RuntimeError("无法获取DirectRouter实例，请检查RPC服务器是否已启动")
         self._cache = {}
+        self._cache_lock = threading.Lock()
 
     def _generate_key(self, start_id: int, end_id: int) -> Tuple[int, int]:
         """生成缓存键 - 返回元组"""
@@ -40,66 +42,78 @@ class DirectRouterRpcClient:
     def calc_path_duration(self, start_id: int, end_id: int) -> float:
         """ 计算路径用时 """
         key = self._generate_key(start_id, end_id)
-        if key in self._cache:
-            return self._cache[key]
-        duration = self._direct_router.calc_path_duration(start_id, end_id)
-        self._cache[key] = duration
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
+        duration, s_id, e_id = self._direct_router.calc_path_duration(start_id, end_id)
+        with self._cache_lock:
+            key = self._generate_key(s_id, e_id)
+            self._cache[key] = duration
         return duration
 
     def batch_calc_path_duration(self, point_pairs_list: List[Tuple[int, int]]) -> List[float]:
         """ 批量计算路径用时 """
         # 先检查缓存
         not_cached_pairs = []
-        for start_id, end_id in point_pairs_list:
-            key = self._generate_key(start_id, end_id)
-            cached_duration = self._cache.get(key)
-            if cached_duration is None:
-                not_cached_pairs.append((start_id, end_id))
+        with self._cache_lock:
+            for start_id, end_id in point_pairs_list:
+                key = self._generate_key(start_id, end_id)
+                cached_duration = self._cache.get(key)
+                if cached_duration is None:
+                    not_cached_pairs.append((start_id, end_id))
 
         # 如果有未缓存的点对，则计算
         if not_cached_pairs:
             results = self._direct_router.batch_calc_path_duration(not_cached_pairs)
             # 缓存计算结果
-            for (start_id, end_id), duration in zip(not_cached_pairs, results):
-                key = self._generate_key(start_id, end_id)
-                self._cache[key] = duration
+            with self._cache_lock:
+                for duration, start_id, end_id in results:
+                    key = self._generate_key(start_id, end_id)
+                    self._cache[key] = duration
 
         # 从缓存中获取所有点对的用时
-        return [
-            self._cache.get(self._generate_key(start_id, end_id))
-            for start_id, end_id in point_pairs_list
-        ]
+        with self._cache_lock:
+            return [
+                self._cache.get(self._generate_key(start_id, end_id))
+                for start_id, end_id in point_pairs_list
+            ]
 
     def get_path_duration_from_cache(self, start_id: int, end_id: int) -> Optional[float]:
         """ 从缓存获取路径用时 """
         # 先查本地缓存
         key = self._generate_key(start_id, end_id)
-        if key in self._cache:
-            return self._cache[key]
+        with self._cache_lock:
+            if key in self._cache:
+                return self._cache[key]
         # 如果本地缓存没有，则查询远程
-        duration = self._direct_router.get_path_duration_from_cache(start_id, end_id)
+        duration, s_id, e_id = self._direct_router.get_path_duration_from_cache(start_id, end_id)
         if duration is not None:
-            self._cache[key] = duration
+            with self._cache_lock:
+                key = self._generate_key(s_id, e_id)
+                self._cache[key] = duration
         return duration
 
     def batch_get_path_duration_from_cache(self, point_pairs_list: List[Tuple[int, int]]) -> List[Optional[float]]:
         """ 批量从缓存获取路径用时 """
         # 先检查缓存
         not_cached_pairs = []
-        for start_id, end_id in point_pairs_list:
-            key = self._generate_key(start_id, end_id)
-            cached_duration = self._cache.get(key)
-            if cached_duration is None:
-                not_cached_pairs.append((start_id, end_id))
+        with self._cache_lock:
+            for start_id, end_id in point_pairs_list:
+                key = self._generate_key(start_id, end_id)
+                cached_duration = self._cache.get(key)
+                if cached_duration is None:
+                    not_cached_pairs.append((start_id, end_id))
         # 如果有未缓存的点对，则查询远程
         if not_cached_pairs:
             results = self._direct_router.batch_get_path_duration_from_cache(not_cached_pairs)
             # 缓存查询结果
-            for (start_id, end_id), duration in zip(not_cached_pairs, results):
-                key = self._generate_key(start_id, end_id)
-                self._cache[key] = duration
+            with self._cache_lock:
+                for duration, start_id, end_id in results:
+                    key = self._generate_key(start_id, end_id)
+                    self._cache[key] = duration
         # 从缓存中获取所有点对的用时
-        return [
-            self._cache.get(self._generate_key(start_id, end_id))
-            for start_id, end_id in point_pairs_list
-        ]
+        with self._cache_lock:
+            return [
+                self._cache.get(self._generate_key(start_id, end_id))
+                for start_id, end_id in point_pairs_list
+            ]

@@ -19,6 +19,9 @@ class DirectRouterProcessExecutor:
 
     def init(self, workers: Optional[int] = None):
         """ 初始化进程池执行器 """
+        import multiprocessing
+        multiprocessing.set_start_method('spawn', force=True)  # 强制使用spawn模式
+        
         with self._lock:
             if self._executor is not None:
                 self._executor.shutdown(wait=True)  # 正确关闭旧的executor

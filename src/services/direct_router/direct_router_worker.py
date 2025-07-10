@@ -17,16 +17,17 @@ class DirectRouterWorker:
             def heuristic(node_id1: int, node_id2: int) -> float:
                 coord1 = get_node_coord(node_id1)
                 coord2 = get_node_coord(node_id2)
-                return haversine(coord1, coord2) / 60 * 3600
+                return haversine(coord1, coord2) / 40 * 3600
 
-            def _find_path_duration(start_id: int, end_id: int) -> float:
-                return float(nx.astar_path_length(g, start_id, end_id, weight='weight', heuristic=heuristic))
+            def _find_path_duration(start_id: int, end_id: int) -> Tuple[float, int, int]:
+                duration = float(nx.astar_path_length(g, start_id, end_id, weight='weight', heuristic=heuristic))
+                return duration, start_id, end_id
 
             cls._instance._calc_path_duration = _find_path_duration
 
         return cls._instance
 
-    def calc_path_duration(self, point_pairs: Tuple[int, int]) -> float:
+    def calc_path_duration(self, point_pairs: Tuple[int, int]) -> Tuple[float, int, int]:
         """ 查询最短路径用时 """
         start_id, end_id = point_pairs
         return self._calc_path_duration(start_id, end_id)

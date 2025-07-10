@@ -113,6 +113,9 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
 def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray, zone_labels: np.ndarray,
                                    warehouse_coords: List[Tuple[float, float]], per_delivery_duration: int,
                                    work_duration: int):
+    import multiprocessing
+    multiprocessing.set_start_method('spawn', force=True)  # 强制使用spawn模式
+    
     un_zone_labels = np.unique(zone_labels)
 
     workers = min(math.ceil(os.cpu_count() / 2), len(un_zone_labels))

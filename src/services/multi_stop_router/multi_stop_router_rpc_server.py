@@ -7,9 +7,7 @@ import Pyro5.client
 import Pyro5.errors
 import click
 
-Pyro5.config.SERVERTYPE = "thread"
-Pyro5.config.THREADPOOL_SIZE = os.cpu_count() * 3
-Pyro5.config.THREADPOOL_SIZE_MIN = os.cpu_count()
+Pyro5.config.SERVERTYPE = "multiplex"
 Pyro5.config.SERIALIZER = 'marshal'
 
 SERVER_ADDRESS = 'localhost'
@@ -74,6 +72,8 @@ class MultiStopRouterRPCServer:
     def start_server(self, bbox: Tuple[float, float, float, float], workers: Optional[int] = None,
                      connection_timeout: int = 180):
         """ 启动RPC服务器（非阻塞） """
+        multiprocessing.set_start_method('spawn', force=True)  # 强制使用spawn模式
+        
         if self.is_running():
             click.echo("MultiStopRouter RPC服务器已经在运行中")
             return
