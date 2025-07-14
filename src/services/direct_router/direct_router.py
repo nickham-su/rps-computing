@@ -1,92 +1,82 @@
-from concurrent.futures import ProcessPoolExecutor
-import os
-from typing import Tuple, List, Optional
-from functools import partial
-import numpy as np
-import pandas as pd
+from typing import Tuple, Optional, List
+import threading
+import Pyro5.server
 
-from src.data.data_loader import load_map_data
-from src.services.direct_router.worker import Worker
-
-# 缓存目录
-cache_dir = './cache'
-# 运行时缓存文件
-cache_file = f'{cache_dir}/path_duration.csv'
+from src.services.direct_router.cache_manager import CacheManager
+from src.services.direct_router.direct_router_executor import DirectRouterProcessExecutor
+from src.services.direct_router.direct_router_worker import DirectRouterWorker
 
 
+@Pyro5.server.expose
 class DirectRouter:
-    _instance = None
+    _calc_lock = threading.Lock()  # 类级别的锁，用于串行化计算方法
 
-    def __new__(cls, warehouse_coord: Optional[Tuple[float, float]] = None,
-                points: Optional[np.ndarray] = None, workers: Optional[int] = None):
-        if not cls._instance:
-            cls._instance = super().__new__(cls)
-            if warehouse_coord is None or points is None:
-                raise ValueError("必须指定warehouse_coord和points参数")
+    @staticmethod
+    def calc_path_duration(start_id: int, end_id: int) -> Tuple[float, int, int]:
+        """计算单条路径用时"""
+        with DirectRouter._calc_lock:
+            # 先检查缓存
+            cache_manager = CacheManager()
+            cached_duration = cache_manager.get_from_cache(start_id, end_id)
+            if cached_duration is not None:
+                return cached_duration, start_id, end_id
 
-            # 读取本地缓存
-            cls._instance.path_duration_cache = {}
-            if not os.path.exists(cache_dir):
-                os.makedirs(cache_dir)
-            for filename in os.listdir(cache_dir):  # 遍历缓存目录
-                if filename.endswith('.csv'):
-                    file_path = os.path.join(cache_dir, filename)
-                    cache = pd.read_csv(file_path, names=['key', 'duration'], dtype={'key': str, 'duration': float})
-                    for _, row in cache.iterrows():
-                        cls._instance.path_duration_cache[row.key] = float(row.duration)
+            # 如果缓存中没有，则计算
+            future = DirectRouterProcessExecutor().submit(calc_path_duration_global, (start_id, end_id))
+            duration, s_id, e_id = future.result()
 
-            # 创建进程池执行器
-            max_workers = os.cpu_count()
-            workers = workers if workers is not None else max_workers
-            executor = ProcessPoolExecutor(max_workers=workers)
-            # 并行加载地图数据
-            partial_func = partial(load_map_data, warehouse_coord, points)
-            list(executor.map(partial_func, range(workers)))
-            cls._instance.executor = executor
-
-        return cls._instance
-
-    def batch_calc_path_duration(self, point_pairs_list: List[Tuple[int, int]]):
-        """ 批量查询路径用时 """
-        no_cache_list: List[Tuple[int, int]] = []
-        for start_id, end_id in point_pairs_list:
-            if start_id == end_id:
-                continue
-            if self.path_duration_cache.get(f"{min(start_id, end_id)}_{max(start_id, end_id)}"):
-                continue
-            no_cache_list.append((start_id, end_id))
-
-        if len(no_cache_list) > 0:
-            # 并行计算
-            results = list(self.executor.map(calc_path_duration, no_cache_list))
             # 缓存结果
-            with open(cache_file, 'a', encoding='utf-8') as file:
-                for i in range(len(no_cache_list)):
-                    start_id, end_id = no_cache_list[i]
-                    key = f"{min(start_id, end_id)}_{max(start_id, end_id)}"
-                    self.path_duration_cache[key] = results[i]
-                    file.write(f"{key},{results[i]}\n")
+            cache_manager.add_item(s_id, e_id, duration)
 
-        duration_list = []
-        for start_id, end_id in point_pairs_list:
-            if start_id == end_id:
-                duration_list.append(0)
-                continue
-            key = f"{min(start_id, end_id)}_{max(start_id, end_id)}"
-            duration = self.path_duration_cache.get(key)
-            if duration is None:
-                raise ValueError(f"无法找到路径用时缓存：{key}")
-            duration_list.append(duration)
+            return duration, s_id, e_id
 
-        return duration_list
+    @staticmethod
+    def batch_calc_path_duration(point_pairs_list: List[Tuple[int, int]]) -> List[Tuple[float, int, int]]:
+        """批量计算路径用时"""
+        with DirectRouter._calc_lock:
+            # 先检查缓存
+            cache_manager = CacheManager()
+            not_cached_pairs = []
+            for start_id, end_id in point_pairs_list:
+                cached_duration = cache_manager.get_from_cache(start_id, end_id)
+                if cached_duration is None:
+                    not_cached_pairs.append((start_id, end_id))
 
-    def get_path_duration_from_cache(self, start_id: int, end_id: int) -> float:
-        """ 从缓存中获取路径用时 """
-        if start_id == end_id:
-            return 0
-        key = f"{min(start_id, end_id)}_{max(start_id, end_id)}"
-        return self.path_duration_cache.get(key)
+            # 如果有未缓存的点对，则计算
+            if not_cached_pairs:
+                process_executor = DirectRouterProcessExecutor()
+                futures = [process_executor.submit(calc_path_duration_global, pair) for pair in not_cached_pairs]
+                results = [future.result() for future in futures]
+                # 缓存计算结果
+                for duration, start_id, end_id in results:
+                    cache_manager.add_item(start_id, end_id, duration)
+
+            # 从缓存中获取所有点对的用时
+            return [
+                (cache_manager.get_from_cache(start_id, end_id), start_id, end_id)
+                for start_id, end_id in point_pairs_list
+            ]
+
+    @staticmethod
+    def get_path_duration_from_cache(start_id: int, end_id: int) -> Tuple[Optional[float], int, int]:
+        """从缓存中获取路径用时"""
+        return CacheManager().get_from_cache(start_id, end_id), start_id, end_id
+
+    @staticmethod
+    def batch_get_path_duration_from_cache(point_pairs_list: List[Tuple[int, int]]) -> List[
+        Tuple[Optional[float], int, int]]:
+        """批量从缓存中获取路径用时"""
+        cache_manager = CacheManager()
+        return [
+            (cache_manager.get_from_cache(start_id, end_id), start_id, end_id)
+            for start_id, end_id in point_pairs_list
+        ]
+
+    @staticmethod
+    def connected() -> bool:
+        """ 检查RPC服务器是否连接成功 """
+        return True
 
 
-def calc_path_duration(point_pairs: Tuple[int, int]) -> float:
-    return Worker().calc_path_duration(point_pairs)
+def calc_path_duration_global(point_pairs: Tuple[int, int]) -> Tuple[float, int, int]:
+    return DirectRouterWorker().calc_path_duration(point_pairs)

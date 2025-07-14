@@ -1,5 +1,5 @@
 import os
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict, Tuple, List
 import click
 import numpy as np
 import pandas as pd
@@ -14,35 +14,31 @@ coord_cache: Optional[Dict[int, Tuple[float, float]]] = None  # 节点坐标缓�
 
 # 道路类型的速度
 way_type_to_speed = {
-    "motorway": 100,
-    "motorway_link": 60,
-    "trunk": 90,
-    "trunk_link": 50,
-    "primary": 80,
+    "motorway": 122,
+    "motorway_link": 90,
+    "trunk": 100,
+    "trunk_link": 60,
+    "primary": 58,
     "primary_link": 45,
-    "secondary": 55,
+    "secondary": 52,
     "secondary_link": 35,
-    "tertiary": 45,
-    "tertiary_link": 30,
+    "tertiary": 51,
+    "tertiary_link": 33,
     "unclassified": 40,
-    "residential": 30,
+    "residential": 42,
 }
 cache_dir = './cache'
 if not os.path.exists(cache_dir):
     os.makedirs(cache_dir)
 
 
-def _get_bbox(warehouse_coord: Tuple[float, float], points: np.ndarray) -> box:
-    # 获取points的范围
-    min_latitude = min(points[:, 0])
-    max_latitude = max(points[:, 0])
-    min_longitude = min(points[:, 1])
-    max_longitude = max(points[:, 1])
-    # 与仓库坐标比较
-    min_latitude = min(min_latitude, warehouse_coord[0])
-    max_latitude = max(max_latitude, warehouse_coord[0])
-    min_longitude = min(min_longitude, warehouse_coord[1])
-    max_longitude = max(max_longitude, warehouse_coord[1])
+def get_bbox(warehouse_coords: List[Tuple[float, float]], points: np.ndarray) -> Tuple[float, float, float, float]:
+    # 计算所有坐标的边界(订单点 + 所有仓库)
+    all_coords = np.vstack([points, np.array(warehouse_coords)])
+    min_latitude = np.min(all_coords[:, 0])
+    max_latitude = np.max(all_coords[:, 0])
+    min_longitude = np.min(all_coords[:, 1])
+    max_longitude = np.max(all_coords[:, 1])
 
     # 计算范围的宽度和高度（公里）
     # 纬度范围（南北方向）
@@ -57,7 +53,7 @@ def _get_bbox(warehouse_coord: Tuple[float, float], points: np.ndarray) -> box:
         raise ValueError("范围超过300km，请检查数据")
 
     # 向四周扩大范围
-    expansion_distance_km = 20
+    expansion_distance_km = 10
     # 纬度方向上的扩展（纬度每度约等于111.32km）
     lat_expansion = expansion_distance_km / 111.32
     expanded_min_latitude = min_latitude - lat_expansion
@@ -71,11 +67,11 @@ def _get_bbox(warehouse_coord: Tuple[float, float], points: np.ndarray) -> box:
     expanded_max_longitude = max_longitude + lon_expansion
 
     # 定义边界框
-    return box(expanded_min_longitude, expanded_min_latitude,
-               expanded_max_longitude, expanded_max_latitude)
+    return (expanded_min_longitude, expanded_min_latitude,
+            expanded_max_longitude, expanded_max_latitude)
 
 
-def _load_map_from_gpkg(bbox: box) -> Tuple[pd.DataFrame, pd.DataFrame]:
+def _load_map_from_gpkg(bbox: Tuple[float, float, float, float]) -> Tuple[pd.DataFrame, pd.DataFrame]:
     # 取环境变量
     map_data_dir = os.getenv('MAP_DATA_DIR', 'map_data')
     map_data_dir = map_data_dir.rstrip('/')
@@ -84,7 +80,7 @@ def _load_map_from_gpkg(bbox: box) -> Tuple[pd.DataFrame, pd.DataFrame]:
         raise FileNotFoundError(f"地图数据文件 {road_network_path} 不存在")
 
     # 直接使用查询读取数据
-    roads = gpd.read_file(road_network_path, layer='lines', bbox=bbox)
+    roads = gpd.read_file(road_network_path, layer='lines', bbox=box(*bbox))
     # 提取所有LineString中的坐标点
     all_points = []
     for line in roads.geometry:
@@ -183,15 +179,15 @@ def _load_map_from_gpkg(bbox: box) -> Tuple[pd.DataFrame, pd.DataFrame]:
     return _map_data, _node_data
 
 
-def load_map_data(warehouse_coord: Tuple[float, float], points: np.ndarray, _: Optional[int] = None) -> None:
+def load_map_data(bbox: Tuple[float, float, float, float], _: Optional[int] = None) -> None:
     global map_data
     global node_data
     global coord_cache
     if map_data is not None:
         return
 
-    map_data_path = f'{cache_dir}/map_data_{len(points)}.pkl'
-    node_data_path = f'{cache_dir}/node_data_{len(points)}.pkl'
+    map_data_path = f'{cache_dir}/map_data_{round(bbox[0], 3)}_{round(bbox[1], 3)}_{round(bbox[2], 3)}_{round(bbox[3], 3)}.pkl'
+    node_data_path = f'{cache_dir}/node_data_{round(bbox[0], 3)}_{round(bbox[1], 3)}_{round(bbox[2], 3)}_{round(bbox[3], 3)}.pkl'
     # 检查缓存
     if os.path.exists(map_data_path) and os.path.exists(node_data_path):
         click.echo("加载pkl缓存数据")
@@ -200,7 +196,7 @@ def load_map_data(warehouse_coord: Tuple[float, float], points: np.ndarray, _: O
     else:
         # 使用gpkg数据，并保存到缓存
         click.echo("加载gpkg地图数据")
-        bbox = _get_bbox(warehouse_coord, points)
+
         map_data, node_data = _load_map_from_gpkg(bbox)
         map_data.to_pickle(map_data_path)
         node_data.to_pickle(node_data_path)
