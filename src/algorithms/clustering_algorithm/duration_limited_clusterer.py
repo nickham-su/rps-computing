@@ -34,9 +34,16 @@ class DurationLimitedClusterer(ClusteringAlgorithm):
         self.cache_stop = 0
         self.cache_count_clusters = 0
 
-    def save_checkpoint(self, labels: np.ndarray) -> Tuple[bool, bool]:
+    def save_checkpoint(self, labels: np.ndarray, progress: float) -> Tuple[bool, bool]:
         total_duration, max_duration, min_duration, std_duration = self.calc_duration(labels)
-        available = max_duration < self.work_duration * 1.3
+
+        limited_duration = self.work_duration * 1.3
+        if 0.5 < progress <= 0.8:
+            limited_duration = self.work_duration * 1.4
+        elif progress > 0.8:
+            limited_duration = self.work_duration * 1.5
+
+        available = max_duration < limited_duration
         savable = available and std_duration < self.min_indicator * 0.95
         if savable:
             self.min_indicator = std_duration
@@ -115,7 +122,7 @@ def batch_duration_limited_cluster(bbox: Tuple[float, float, float, float], poin
                                    work_duration: int):
     import multiprocessing
     multiprocessing.set_start_method('spawn', force=True)  # 强制使用spawn模式
-    
+
     un_zone_labels = np.unique(zone_labels)
 
     workers = min(math.ceil(os.cpu_count() / 2), len(un_zone_labels))
@@ -163,5 +170,5 @@ def duration_limited_cluster(points: np.ndarray, warehouse_coords: List[Tuple[fl
     num_clusters = math.ceil(points.shape[0] / (work_duration / 3600 * 5))  # 每小时5单是一个偏小的假设
     centroids = random_choice(points, max(num_clusters, 2))  # 至少需要2个中心点
     clusterer = DurationLimitedClusterer(warehouse_coords, points, per_delivery_duration, work_duration)
-    labels, _ = clusterer.clustering(centroids, step=3, max_iter=30, zone=zone)
+    labels, _ = clusterer.clustering(centroids, step=3, zone=zone)
     return labels

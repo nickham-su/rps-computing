@@ -10,7 +10,7 @@ class SizeLimitedClusterer(ClusteringAlgorithm):
         self.max_size = max_size
         self.min_std = math.inf
 
-    def save_checkpoint(self, labels: np.ndarray) -> Tuple[bool, bool]:
+    def save_checkpoint(self, labels: np.ndarray, progress: float) -> Tuple[bool, bool]:
         size_list = [len(self.points[labels == label]) for label in np.unique(labels)]
         size_std = np.std(size_list)
         if size_std < self.min_std:

@@ -33,7 +33,7 @@ class ClusteringAlgorithm(ABC):
         return np.array(new_centroids)
 
     @abstractmethod
-    def save_checkpoint(self, labels: np.ndarray) -> Tuple[bool, bool]:
+    def save_checkpoint(self, labels: np.ndarray, progress: float) -> Tuple[bool, bool]:
         pass
 
     @abstractmethod
@@ -311,7 +311,7 @@ class ClusteringAlgorithm(ABC):
 
             centroids = centroids2
 
-            available, savable = self.save_checkpoint(labels)
+            available, savable = self.save_checkpoint(labels, i / max_iter)
             if savable:
                 checkpoint_step = 0
                 checkpoint_labels = labels

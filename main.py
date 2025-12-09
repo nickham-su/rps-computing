@@ -147,7 +147,7 @@ def batch_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray,
     num_clusters = math.ceil(points.shape[0] / mini_cluster_size)
     centroids = random_choice(points, num_clusters)
     clusterer = SizeLimitedClusterer(points, mini_cluster_size)
-    mini_cluster_labels, _ = clusterer.clustering(centroids, step=1, max_iter=30)
+    mini_cluster_labels, _ = clusterer.clustering(centroids, step=1)
 
     # 2.每个微簇取一个点
     mini_cluster_points = []
@@ -163,7 +163,7 @@ def batch_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray,
     num_clusters = math.ceil(mini_cluster_points.shape[0] / round(zone_size / mini_cluster_size))
     centroids = random_choice(mini_cluster_points, num_clusters)
     clusterer = SizeLimitedClusterer(mini_cluster_points, round(zone_size / mini_cluster_size))
-    mini_cluster_to_zone_labels, _ = clusterer.clustering(centroids, step=2, max_iter=30)
+    mini_cluster_to_zone_labels, _ = clusterer.clustering(centroids, step=2)
 
     # 4.将微簇标签映射到区域标签，得到 zone_labels
     un_mini_cluster_labels = np.unique(mini_cluster_labels)
