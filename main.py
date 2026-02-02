@@ -8,9 +8,10 @@ import math
 
 from src.algorithms.clustering_algorithm.cluster_refiner import refine_clusters
 from src.algorithms.clustering_algorithm.duration_limited_clusterer import batch_duration_limited_cluster, \
-    DurationLimitedClusterer, duration_limited_cluster
+    duration_limited_cluster, find_closest_warehouse
 from src.algorithms.clustering_algorithm.size_limited_clusterer import SizeLimitedClusterer
 from src.services.direct_router.direct_router_rpc_server import DirectRouterRpcServer
+from src.services.multi_stop_router.multi_stop_router_rpc_client import MultiStopRouterRpcClient
 from src.services.multi_stop_router.multi_stop_router_rpc_server import MultiStopRouterRPCServer
 from src.utils.utils import random_choice
 from src.data.data_loader import load_map_data, get_bbox
@@ -107,15 +108,20 @@ def main(warehouse_coord, warehouse_coords, orders_excel, per_delivery_duration,
         click.echo("正在预处理数据...")
         preprocess_data(points, 50)
 
-        if points.shape[0] < 2000:
-            click.echo(f"运单数量: {len(points)}，进行单进程聚类...")
-            labels = duration_limited_cluster(points, coords_list, per_delivery_duration, work_duration)
-        else:
-            click.echo(f"运单数量: {len(points)}，进行并行聚类...")
-            labels = batch_cluster(bbox, points, coords_list, per_delivery_duration, work_duration)
+        # 判断是否需要聚类
+        if need_cluster(points, coords_list, per_delivery_duration, work_duration):
+            if points.shape[0] < 2000:
+                click.echo(f"运单数量: {len(points)}，进行单进程聚类...")
+                labels = duration_limited_cluster(points, coords_list, per_delivery_duration, work_duration)
+            else:
+                click.echo(f"运单数量: {len(points)}，进行并行聚类...")
+                labels = batch_cluster(bbox, points, coords_list, per_delivery_duration, work_duration)
 
-        # 优化聚类结果
-        labels = refine_clusters(points, labels, min_cluster_size=3, small_group_threshold=0.1)
+            # 优化聚类结果
+            labels = refine_clusters(points, labels, min_cluster_size=3, small_group_threshold=0.1)
+        else:
+            click.echo("无需聚类，所有运单分配到同一簇。")
+            labels = np.zeros(len(points), dtype=int)
 
         # 可视化并导出结果
         click.echo("正在导出和可视化结果...")
@@ -176,6 +182,26 @@ def batch_cluster(bbox: Tuple[float, float, float, float], points: np.ndarray,
     result_labels = batch_duration_limited_cluster(bbox, points, zone_labels, warehouse_coords, per_delivery_duration,
                                                    work_duration)
     return result_labels
+
+
+def need_cluster(points: np.ndarray, warehouse_coords: List[Tuple[float, float]], per_delivery_duration: int,
+                 work_duration: int) -> bool:
+    """ 判断是否需要进行聚类 """
+    if len(points) > work_duration / 3600 * 15:
+        # 超过总时长 * 15单，肯定需要聚类
+        return True
+    client = MultiStopRouterRpcClient()
+    warehouse_coord = find_closest_warehouse(points, warehouse_coords)
+    # 计算路径用时
+    travel_time = client.batch_calc_route_duration(
+        [([(float(lat), float(lon)) for lat, lon in points], warehouse_coord)]
+    )[0]
+    # 计算配送时间
+    delivery_duration = len(points) * per_delivery_duration
+    if travel_time + delivery_duration > work_duration * 1.2:
+        # 预计超出总时长20%，需要聚类
+        return True
+    return False
 
 
 if __name__ == '__main__':
