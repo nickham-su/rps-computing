@@ -244,7 +244,7 @@ class ClusteringAlgorithm(ABC):
             second_duration = duration_arr[1] or 24 * 3600  # 如果没有缓存，使用24小时作为默认值
 
             # 计算最近点到附近已分配点的平均距离
-            d, neighbor_indices = kdtree.query([first_point], k=3)  # 查询最近的3个点（包含自身）
+            d, neighbor_indices = kdtree.query([first_point], k=min(3, len(allocated_points)))  # 查询最近的3个点（包含自身）
             first_to_neighbors_distances = d[0][1:]  # 距离第一个点到其邻近点的距离
             first_to_neighbors_distances = first_to_neighbors_distances[
                 ~np.isnan(first_to_neighbors_distances)]  # 去除NaN值
